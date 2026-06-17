@@ -6,8 +6,12 @@ import {
   type LogEntry,
   type Stats,
   type ReportData,
+  type TeamDrillData,
   type SearchResult,
   type PaginatedResult,
+  type OverdueTaskWithGovernance,
+  type GovernanceStats,
+  type OverdueUser,
 } from '@/utils/api';
 
 interface AppState {
@@ -19,8 +23,13 @@ interface AppState {
   logsTotal: number;
   stats: Stats | null;
   reportData: ReportData | null;
+  teamDrillData: TeamDrillData | null;
   searchResults: SearchResult | null;
   selectedTask: Task | null;
+  governanceStats: GovernanceStats | null;
+  overdueTasks: OverdueTaskWithGovernance[];
+  overdueTasksTotal: number;
+  overdueUsers: OverdueUser[];
   currentUser: { name: string; role: string; avatar: string };
   sidebarCollapsed: boolean;
   loading: Record<string, boolean>;
@@ -37,8 +46,13 @@ interface AppState {
   setSelectedTask: (task: Task | null) => void;
   fetchStats: () => Promise<void>;
   fetchReport: (month?: string) => Promise<void>;
+  fetchTeamDrill: (teamId: string, month?: string) => Promise<void>;
+  clearTeamDrill: () => void;
   fetchLogs: (params?: Record<string, string>) => Promise<void>;
   search: (params: Record<string, string>) => Promise<void>;
+  fetchGovernanceStats: () => Promise<void>;
+  fetchOverdueTasks: (params?: Record<string, string>) => Promise<void>;
+  fetchOverdueUsers: () => Promise<void>;
   clearError: (key: string) => void;
 }
 
@@ -51,8 +65,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   logsTotal: 0,
   stats: null,
   reportData: null,
+  teamDrillData: null,
   searchResults: null,
   selectedTask: null,
+  governanceStats: null,
+  overdueTasks: [],
+  overdueTasksTotal: 0,
+  overdueUsers: [],
   currentUser: { name: '张伟', role: '系统管理员', avatar: '' },
   sidebarCollapsed: false,
   loading: {},
@@ -139,6 +158,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  fetchTeamDrill: async (teamId, month) => {
+    set(s => ({ loading: { ...s.loading, teamDrill: true }, error: { ...s.error, teamDrill: null } }));
+    try {
+      const teamDrillData = await api.reports.getTeamDrill(teamId, month);
+      set({ teamDrillData, loading: { ...get().loading, teamDrill: false } });
+    } catch (e: any) {
+      set(s => ({ loading: { ...s.loading, teamDrill: false }, error: { ...s.error, teamDrill: e.message } }));
+    }
+  },
+
+  clearTeamDrill: () => set({ teamDrillData: null }),
+
   fetchLogs: async (params) => {
     set(s => ({ loading: { ...s.loading, logs: true }, error: { ...s.error, logs: null } }));
     try {
@@ -146,6 +177,36 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ logs: res.items, logsTotal: res.total, loading: { ...get().loading, logs: false } });
     } catch (e: any) {
       set(s => ({ loading: { ...s.loading, logs: false }, error: { ...s.error, logs: e.message } }));
+    }
+  },
+
+  fetchGovernanceStats: async () => {
+    set(s => ({ loading: { ...s.loading, governanceStats: true }, error: { ...s.error, governanceStats: null } }));
+    try {
+      const governanceStats = await api.governance.getStats();
+      set({ governanceStats, loading: { ...get().loading, governanceStats: false } });
+    } catch (e: any) {
+      set(s => ({ loading: { ...s.loading, governanceStats: false }, error: { ...s.error, governanceStats: e.message } }));
+    }
+  },
+
+  fetchOverdueTasks: async (params) => {
+    set(s => ({ loading: { ...s.loading, overdueTasks: true }, error: { ...s.error, overdueTasks: null } }));
+    try {
+      const res = await api.governance.getOverdue(params);
+      set({ overdueTasks: res.items, overdueTasksTotal: res.total, loading: { ...get().loading, overdueTasks: false } });
+    } catch (e: any) {
+      set(s => ({ loading: { ...s.loading, overdueTasks: false }, error: { ...s.error, overdueTasks: e.message } }));
+    }
+  },
+
+  fetchOverdueUsers: async () => {
+    set(s => ({ loading: { ...s.loading, overdueUsers: true }, error: { ...s.error, overdueUsers: null } }));
+    try {
+      const overdueUsers = await api.governance.getUsers();
+      set({ overdueUsers, loading: { ...get().loading, overdueUsers: false } });
+    } catch (e: any) {
+      set(s => ({ loading: { ...s.loading, overdueUsers: false }, error: { ...s.error, overdueUsers: e.message } }));
     }
   },
 

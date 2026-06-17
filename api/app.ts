@@ -16,6 +16,7 @@ import reportRoutes from './routes/reports.js'
 import searchRoutes from './routes/search.js'
 import logRoutes from './routes/logs.js'
 import statsRoutes from './routes/stats.js'
+import governanceRoutes from './routes/governance.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -41,6 +42,7 @@ app.use('/api/reports', reportRoutes)
 app.use('/api/search', searchRoutes)
 app.use('/api/logs', logRoutes)
 app.use('/api/stats', statsRoutes)
+app.use('/api/governance', governanceRoutes)
 
 app.use(
   '/api/health',

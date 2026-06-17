@@ -119,6 +119,55 @@ export interface TeamReport {
   overdue_count: number;
 }
 
+export interface TeamDrillData {
+  team: { id: string; name: string };
+  month: string;
+  summary: {
+    total_meetings: number;
+    total_duration: number;
+    total_tasks: number;
+    completed_tasks: number;
+    completion_rate: number;
+    avg_response_hours: number;
+    overdue_tasks: number;
+  };
+  meetings: Meeting[];
+  tasks: (Task & { response_hours: number | null; is_overdue: number; meeting_title?: string; meeting_date?: string; assignee_name?: string })[];
+}
+
+export interface NotifiedRecipient {
+  recipient_type: 'assignee' | 'supervisor' | 'dept_head';
+  sent_to: string;
+  sent_to_name: string;
+  sent_at: string;
+}
+
+export interface OverdueTaskWithGovernance extends Task {
+  team_id?: string;
+  team_name?: string;
+  meeting_title?: string;
+  assignee_name?: string;
+  notified_recipients: NotifiedRecipient[];
+  first_escalation_at: string | null;
+  last_remind_at: string | null;
+  next_check_at: string;
+  overdue_days: number;
+}
+
+export interface GovernanceStats {
+  total_overdue: number;
+  by_level: Record<string, number>;
+  by_team: { team_id: string; team_name: string; cnt: number }[];
+}
+
+export interface OverdueUser {
+  id: string;
+  name: string;
+  role: string;
+  team_name?: string;
+  overdue_count: number;
+}
+
 export interface SearchResult {
   items: (Meeting | Task)[];
   total: number;
@@ -176,8 +225,18 @@ export const api = {
   reports: {
     get: (month?: string) =>
       request<ReportData>(`/reports/monthly${month ? `?month=${month}` : ''}`),
+    getTeamDrill: (teamId: string, month?: string) =>
+      request<TeamDrillData>(`/reports/monthly/team/${teamId}${month ? `?month=${month}` : ''}`),
     exportPdfUrl: (month?: string) => `${BASE_URL}/reports/monthly/pdf${month ? `?month=${month}` : ''}`,
     exportExcelUrl: (month?: string) => `${BASE_URL}/reports/monthly/excel${month ? `?month=${month}` : ''}`,
+  },
+  governance: {
+    getOverdue: (params?: Record<string, string>) => {
+      const qs = params ? `?${new URLSearchParams(params).toString()}` : '';
+      return request<PaginatedResult<OverdueTaskWithGovernance>>(`/governance/overdue${qs}`);
+    },
+    getStats: () => request<GovernanceStats>('/governance/stats'),
+    getUsers: () => request<OverdueUser[]>('/governance/users'),
   },
   search: {
     query: (params: Record<string, string>) =>

@@ -142,6 +142,83 @@ router.get('/monthly', (req: Request, res: Response): void => {
   res.json({ success: true, data })
 })
 
+router.get('/monthly/team/:teamId', (req: Request, res: Response): void => {
+  const { teamId } = req.params
+  const { month } = req.query
+  const m = (month as string) || new Date().toISOString().substring(0, 7)
+  const now = new Date().toISOString().replace('T', ' ').substring(0, 19)
+
+  const team = db.prepare('SELECT * FROM teams WHERE id = ?').get(teamId) as Record<string, unknown> | undefined
+  if (!team) {
+    res.status(404).json({ success: false, error: '团队不存在' })
+    return
+  }
+
+  const meetings = db.prepare(`
+    SELECT m.*, t.name as team_name
+    FROM meetings m
+    LEFT JOIN teams t ON m.team_id = t.id
+    WHERE m.team_id = ? AND strftime('%Y-%m', m.date) = ?
+    ORDER BY m.date DESC
+  `).all(teamId, m) as Record<string, unknown>[]
+
+  const tasks = db.prepare(`
+    SELECT t.*, u.name as assignee_name, m.title as meeting_title, m.date as meeting_date
+    FROM tasks t
+    LEFT JOIN meetings m ON t.meeting_id = m.id
+    LEFT JOIN users u ON t.assignee_id = u.id
+    WHERE m.team_id = ? AND strftime('%Y-%m', m.date) = ?
+    ORDER BY t.deadline ASC
+  `).all(teamId, m) as Record<string, unknown>[]
+
+  const totalTasks = tasks.length
+  const completedTasks = tasks.filter(t => t.status === 'completed')
+  const completionRate = totalTasks > 0 ? completedTasks.length / totalTasks : 0
+
+  let totalResponseHours = 0
+  completedTasks.forEach(t => {
+    if (t.completed_at && t.created_at) {
+      const hours = (new Date(t.completed_at as string).getTime() - new Date(t.created_at as string).getTime()) / (1000 * 60 * 60)
+      totalResponseHours += Math.max(0, hours)
+    }
+  })
+  const avgResponseHours = completedTasks.length > 0 ? totalResponseHours / completedTasks.length : 0
+
+  const overdueTasks = tasks.filter(t =>
+    t.status !== 'completed' && (t.deadline as string) < now
+  )
+
+  const totalDuration = meetings.reduce((sum, m) => sum + ((m.duration as number) || 0), 0)
+
+  const taskDetails = tasks.map(t => {
+    let responseHours: number | null = null
+    if (t.status === 'completed' && t.completed_at && t.created_at) {
+      responseHours = Math.max(0, (new Date(t.completed_at as string).getTime() - new Date(t.created_at as string).getTime()) / (1000 * 60 * 60))
+    }
+    const isOverdue = t.status !== 'completed' && (t.deadline as string) < now
+    return { ...t, response_hours: responseHours, is_overdue: isOverdue ? 1 : 0 }
+  })
+
+  res.json({
+    success: true,
+    data: {
+      team: { id: team.id, name: team.name },
+      month: m,
+      summary: {
+        total_meetings: meetings.length,
+        total_duration: totalDuration,
+        total_tasks: totalTasks,
+        completed_tasks: completedTasks.length,
+        completion_rate: completionRate,
+        avg_response_hours: avgResponseHours,
+        overdue_tasks: overdueTasks.length,
+      },
+      meetings,
+      tasks: taskDetails,
+    },
+  })
+})
+
 router.get('/monthly/pdf', (req: Request, res: Response): void => {
   const { month } = req.query
   const m = (month as string) || new Date().toISOString().substring(0, 7)
@@ -314,6 +391,53 @@ router.get('/monthly/excel', async (req: Request, res: Response): Promise<void> 
       cr_change: `${(changes.completion_rate_change * 100).toFixed(1)}%`,
       ar_change: changes.avg_response_hours_change.toFixed(1),
       oc_change: changes.overdue_count_change,
+    })
+  })
+
+  const nowStr = new Date().toISOString().replace('T', ' ').substring(0, 19)
+  teams.forEach(team => {
+    const teamId = team.team_id as string
+    const teamName = String(team.team_name).substring(0, 20)
+    const safeSheetName = teamName.replace(/[\\/?*\[\]]/g, '_')
+    const sheet = workbook.addWorksheet(safeSheetName)
+
+    sheet.columns = [
+      { header: '待办标题', key: 'title', width: 35 },
+      { header: '负责人', key: 'assignee', width: 12 },
+      { header: '状态', key: 'status', width: 12 },
+      { header: '紧急度', key: 'urgency', width: 10 },
+      { header: '截止日期', key: 'deadline', width: 22 },
+      { header: '响应耗时(h)', key: 'response_hours', width: 14 },
+      { header: '是否超时', key: 'is_overdue', width: 10 },
+      { header: '来源会议', key: 'meeting_title', width: 30 },
+    ]
+
+    const teamTasks = db.prepare(`
+      SELECT t.*, u.name as assignee_name, m.title as meeting_title
+      FROM tasks t
+      LEFT JOIN meetings m ON t.meeting_id = m.id
+      LEFT JOIN users u ON t.assignee_id = u.id
+      WHERE m.team_id = ? AND strftime('%Y-%m', m.date) = ?
+      ORDER BY t.deadline ASC
+    `).all(teamId, m) as Record<string, unknown>[]
+
+    teamTasks.forEach(t => {
+      let responseHours: string = '-'
+      if (t.status === 'completed' && t.completed_at && t.created_at) {
+        const h = Math.max(0, (new Date(t.completed_at as string).getTime() - new Date(t.created_at as string).getTime()) / (1000 * 60 * 60))
+        responseHours = h.toFixed(1)
+      }
+      const isOverdue = t.status !== 'completed' && (t.deadline as string) < nowStr
+      sheet.addRow({
+        title: t.title,
+        assignee: t.assignee_name || '-',
+        status: t.status,
+        urgency: t.urgency,
+        deadline: t.deadline,
+        response_hours: responseHours,
+        is_overdue: isOverdue ? '是' : '否',
+        meeting_title: t.meeting_title || '-',
+      })
     })
   })
 

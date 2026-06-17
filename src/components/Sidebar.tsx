@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, Video, CheckSquare, BarChart3, Search, FileText, ChevronLeft, ChevronRight } from 'lucide-react';
+import { LayoutDashboard, Video, CheckSquare, BarChart3, Search, FileText, ChevronLeft, ChevronRight, AlertTriangle } from 'lucide-react';
 import { useAppStore } from '@/stores/appStore';
 import { cn } from '@/lib/utils';
 
@@ -8,6 +8,7 @@ const navItems = [
   { to: '/meetings', icon: Video, label: '会议管理' },
   { to: '/tasks', icon: CheckSquare, label: '待办中心' },
   { to: '/reports', icon: BarChart3, label: '效率报告' },
+  { to: '/governance', icon: AlertTriangle, label: '超时治理' },
   { to: '/search', icon: Search, label: '历史查询' },
   { to: '/logs', icon: FileText, label: '操作日志' },
 ];

@@ -38,11 +38,35 @@ function getSupervisorAndDeptHead(assigneeId: string): { supervisorId: string | 
   }
 }
 
-function insertReminder(taskId: string, type: string, sentTo: string, recipientType: string, sentAt: string) {
+function upsertAssigneeReminder(taskId: string, type: string, sentTo: string, sentAt: string) {
+  const existing = db.prepare(
+    'SELECT id FROM reminders WHERE task_id = ? AND recipient_type = ?'
+  ).get(taskId, 'assignee') as { id: string } | undefined
+
+  if (existing) {
+    db.prepare(
+      'UPDATE reminders SET sent_at = ?, type = ?, status = ? WHERE id = ?'
+    ).run(sentAt, type, 'sent', existing.id)
+  } else {
+    const reminderId = uuidv4()
+    db.prepare(
+      'INSERT INTO reminders (id, task_id, type, sent_to, recipient_type, sent_at, status) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).run(reminderId, taskId, type, sentTo, 'assignee', sentAt, 'sent')
+  }
+}
+
+function insertEscalationReminder(taskId: string, sentTo: string, recipientType: 'supervisor' | 'dept_head', sentAt: string): boolean {
+  const existing = db.prepare(
+    'SELECT id FROM reminders WHERE task_id = ? AND recipient_type = ?'
+  ).get(taskId, recipientType) as { id: string } | undefined
+
+  if (existing) return false
+
   const reminderId = uuidv4()
   db.prepare(
     'INSERT INTO reminders (id, task_id, type, sent_to, recipient_type, sent_at, status) VALUES (?, ?, ?, ?, ?, ?, ?)'
-  ).run(reminderId, taskId, type, sentTo, recipientType, sentAt, 'sent')
+  ).run(reminderId, taskId, 'escalation', sentTo, recipientType, sentAt, 'sent')
+  return true
 }
 
 function insertLog(type: string, detail: string, operatorId: string | null, relatedId: string | null, isAnomaly: number, createdAt: string) {
@@ -90,14 +114,14 @@ function processOverdueTasks() {
       escalationLevel = Math.max(escalationLevel, 1)
     }
 
-    insertReminder(taskId, 'auto_remind', task.assignee_id as string, 'assignee', now)
+    upsertAssigneeReminder(taskId, 'auto_remind', task.assignee_id as string, now)
 
     if (remindCount >= 2) {
       if (supervisorId && supervisorId !== task.assignee_id) {
-        insertReminder(taskId, 'escalation', supervisorId, 'supervisor', now)
+        insertEscalationReminder(taskId, supervisorId, 'supervisor', now)
       }
       if (deptHeadId && deptHeadId !== supervisorId && deptHeadId !== task.assignee_id) {
-        insertReminder(taskId, 'escalation', deptHeadId, 'dept_head', now)
+        insertEscalationReminder(taskId, deptHeadId, 'dept_head', now)
       }
     }
 

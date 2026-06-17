@@ -240,23 +240,43 @@ router.post('/:id/remind', (req: Request, res: Response): void => {
     escalationLevel = Math.max(escalationLevel, 1)
   }
 
-  const reminderId = uuidv4()
-  db.prepare(
-    'INSERT INTO reminders (id, task_id, type, sent_to, recipient_type, sent_at, status) VALUES (?, ?, ?, ?, ?, ?, ?)'
-  ).run(reminderId, id, 'manual_remind', task.assignee_id as string, 'assignee', now, 'sent')
+  const existingAssigneeReminder = db.prepare(
+    'SELECT id FROM reminders WHERE task_id = ? AND recipient_type = ?'
+  ).get(id, 'assignee') as { id: string } | undefined
+
+  if (existingAssigneeReminder) {
+    db.prepare(
+      'UPDATE reminders SET sent_at = ?, type = ?, status = ? WHERE id = ?'
+    ).run(now, 'manual_remind', 'sent', existingAssigneeReminder.id)
+  } else {
+    const reminderId = uuidv4()
+    db.prepare(
+      'INSERT INTO reminders (id, task_id, type, sent_to, recipient_type, sent_at, status) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).run(reminderId, id, 'manual_remind', task.assignee_id as string, 'assignee', now, 'sent')
+  }
 
   if (remindCount >= 2) {
     if (supervisorId && supervisorId !== task.assignee_id) {
-      const supReminderId = uuidv4()
-      db.prepare(
-        'INSERT INTO reminders (id, task_id, type, sent_to, recipient_type, sent_at, status) VALUES (?, ?, ?, ?, ?, ?, ?)'
-      ).run(supReminderId, id, 'escalation', supervisorId, 'supervisor', now, 'sent')
+      const existingSupervisor = db.prepare(
+        'SELECT id FROM reminders WHERE task_id = ? AND recipient_type = ?'
+      ).get(id, 'supervisor') as { id: string } | undefined
+      if (!existingSupervisor) {
+        const supReminderId = uuidv4()
+        db.prepare(
+          'INSERT INTO reminders (id, task_id, type, sent_to, recipient_type, sent_at, status) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        ).run(supReminderId, id, 'escalation', supervisorId, 'supervisor', now, 'sent')
+      }
     }
     if (deptHeadId && deptHeadId !== supervisorId && deptHeadId !== task.assignee_id) {
-      const deptReminderId = uuidv4()
-      db.prepare(
-        'INSERT INTO reminders (id, task_id, type, sent_to, recipient_type, sent_at, status) VALUES (?, ?, ?, ?, ?, ?, ?)'
-      ).run(deptReminderId, id, 'escalation', deptHeadId, 'dept_head', now, 'sent')
+      const existingDeptHead = db.prepare(
+        'SELECT id FROM reminders WHERE task_id = ? AND recipient_type = ?'
+      ).get(id, 'dept_head') as { id: string } | undefined
+      if (!existingDeptHead) {
+        const deptReminderId = uuidv4()
+        db.prepare(
+          'INSERT INTO reminders (id, task_id, type, sent_to, recipient_type, sent_at, status) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        ).run(deptReminderId, id, 'escalation', deptHeadId, 'dept_head', now, 'sent')
+      }
     }
   }
 

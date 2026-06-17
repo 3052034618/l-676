@@ -7,6 +7,7 @@ import Tasks from "@/pages/Tasks";
 import Reports from "@/pages/Reports";
 import Search from "@/pages/Search";
 import Logs from "@/pages/Logs";
+import Governance from "@/pages/Governance";
 
 export default function App() {
   return (
@@ -21,6 +22,7 @@ export default function App() {
           <Route path="/reports" element={<Reports />} />
           <Route path="/search" element={<Search />} />
           <Route path="/logs" element={<Logs />} />
+          <Route path="/governance" element={<Governance />} />
         </Route>
       </Routes>
     </Router>
