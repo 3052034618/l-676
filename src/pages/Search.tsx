@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, Calendar, User, Video, CheckSquare } from 'lucide-react';
+import { Search, Calendar, User, Video, CheckSquare, Download } from 'lucide-react';
 import { useAppStore } from '@/stores/appStore';
 import StatusBadge from '@/components/StatusBadge';
 import type { Meeting, Task } from '@/utils/api';
@@ -14,6 +14,7 @@ export default function SearchPage() {
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [assignee, setAssignee] = useState('');
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const handleSearch = () => {
     const params: Record<string, string> = {};
@@ -22,6 +23,56 @@ export default function SearchPage() {
     if (dateTo) params.dateTo = dateTo;
     if (assignee) params.assignee_id = assignee;
     search(params);
+    setSelectedIds(new Set());
+  };
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleAll = () => {
+    if (!searchResults?.items) return;
+    if (selectedIds.size === searchResults.items.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(searchResults.items.map(i => i.id)));
+    }
+  };
+
+  const handleExport = () => {
+    const params = new URLSearchParams();
+    if (keyword) params.set('keyword', keyword);
+    if (dateFrom) params.set('dateFrom', dateFrom);
+    if (dateTo) params.set('dateTo', dateTo);
+    if (assignee) params.set('assignee_id', assignee);
+
+    const fetchOptions: RequestInit = { method: 'POST', headers: { 'Content-Type': 'application/json' } };
+    if (selectedIds.size > 0) {
+      fetchOptions.body = JSON.stringify({ ids: Array.from(selectedIds) });
+    } else {
+      const body: Record<string, string> = {};
+      if (keyword) body.keyword = keyword;
+      if (dateFrom) body.dateFrom = dateFrom;
+      if (dateTo) body.dateTo = dateTo;
+      if (assignee) body.assignee_id = assignee;
+      fetchOptions.body = JSON.stringify(body);
+    }
+
+    fetch('/api/search/export', fetchOptions)
+      .then(res => res.blob())
+      .then(blob => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'search-results.xlsx';
+        a.click();
+        URL.revokeObjectURL(url);
+      });
   };
 
   const isMeeting = (item: Meeting | Task): item is Meeting =>
@@ -76,54 +127,81 @@ export default function SearchPage() {
         </div>
       ) : searchResults ? (
         <div className="space-y-3">
-          <div className="flex items-center gap-4">
+          <div className="flex items-center justify-between">
             <span className="text-sm" style={{ color: 'var(--color-text-muted)' }}>
               共找到 {searchResults.total} 条结果（会议 {searchResults.meetingCount}，待办 {searchResults.taskCount}）
+              {selectedIds.size > 0 && ` · 已选 ${selectedIds.size} 条`}
             </span>
+            <button
+              onClick={handleExport}
+              className="btn-secondary flex items-center gap-2 text-sm"
+            >
+              <Download size={14} /> 导出{selectedIds.size > 0 ? '已选' : '全部'}
+            </button>
           </div>
 
           <div className="space-y-2">
             {items.length === 0 ? (
               <div className="card text-center py-12" style={{ color: 'var(--color-text-muted)' }}>暂无搜索结果</div>
-            ) : items.map(item => (
-              <div
-                key={item.id}
-                className="card cursor-pointer transition-colors"
-                onClick={() => {
-                  if (item.item_type === 'meeting') navigate(`/meetings/${item.id}`);
-                  else navigate(`/tasks?id=${item.id}`);
-                }}
-              >
-                <div className="flex items-start justify-between">
-                  <div className="flex items-start gap-3">
-                    <div className="mt-0.5">
-                      {item.item_type === 'meeting' ? (
-                        <Video size={16} style={{ color: 'var(--color-accent)' }} />
-                      ) : (
-                        <CheckSquare size={16} style={{ color: 'var(--color-success)' }} />
-                      )}
-                    </div>
-                    <div>
-                      <p className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>{item.title}</p>
-                      <p className="text-xs mt-1" style={{ color: 'var(--color-text-muted)' }}>
-                        {item.item_type === 'meeting'
-                          ? `${(item as Meeting).date} · ${(item as Meeting).duration}分钟`
-                          : `负责人: ${(item as Task).assignee_name ?? '未指定'} · 截止: ${(item as Task).deadline}`}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span className="badge" style={{
-                      backgroundColor: item.item_type === 'meeting' ? 'var(--color-accent-soft)' : 'var(--color-success-soft)',
-                      color: item.item_type === 'meeting' ? 'var(--color-accent)' : 'var(--color-success)',
-                    }}>
-                      {item.item_type === 'meeting' ? '会议' : '待办'}
-                    </span>
-                    <StatusBadge type={item.item_type} status={item.status} />
-                  </div>
+            ) : (
+              <>
+                <div className="flex items-center gap-3 px-3 py-1">
+                  <input
+                    type="checkbox"
+                    checked={items.length > 0 && selectedIds.size === items.length}
+                    onChange={toggleAll}
+                    className="w-4 h-4 rounded accent-orange-500"
+                  />
+                  <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>全选</span>
                 </div>
-              </div>
-            ))}
+                {items.map(item => (
+                  <div
+                    key={item.id}
+                    className="card cursor-pointer transition-colors"
+                    onClick={() => {
+                      if (item.item_type === 'meeting') navigate(`/meetings/${item.id}`);
+                      else navigate(`/tasks?id=${item.id}`);
+                    }}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="flex items-start gap-3">
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(item.id)}
+                          onChange={e => { e.stopPropagation(); toggleSelect(item.id); }}
+                          onClick={e => e.stopPropagation()}
+                          className="w-4 h-4 mt-0.5 rounded accent-orange-500"
+                        />
+                        <div className="mt-0.5">
+                          {item.item_type === 'meeting' ? (
+                            <Video size={16} style={{ color: 'var(--color-accent)' }} />
+                          ) : (
+                            <CheckSquare size={16} style={{ color: 'var(--color-success)' }} />
+                          )}
+                        </div>
+                        <div>
+                          <p className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>{item.title}</p>
+                          <p className="text-xs mt-1" style={{ color: 'var(--color-text-muted)' }}>
+                            {item.item_type === 'meeting'
+                              ? `${(item as Meeting).date} · ${(item as Meeting).duration}分钟`
+                              : `负责人: ${(item as Task).assignee_name ?? '未指定'} · 截止: ${(item as Task).deadline}`}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="badge" style={{
+                          backgroundColor: item.item_type === 'meeting' ? 'var(--color-accent-soft)' : 'var(--color-success-soft)',
+                          color: item.item_type === 'meeting' ? 'var(--color-accent)' : 'var(--color-success)',
+                        }}>
+                          {item.item_type === 'meeting' ? '会议' : '待办'}
+                        </span>
+                        <StatusBadge type={item.item_type} status={item.status} />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </>
+            )}
           </div>
         </div>
       ) : (

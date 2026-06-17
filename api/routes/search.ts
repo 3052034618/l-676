@@ -43,7 +43,7 @@ router.get('/', (req: Request, res: Response): void => {
   }
 
   const meetings = db.prepare(`
-    SELECT m.id, m.title, m.date, m.status, m.team_id, tm.name as team_name, 'meeting' as type
+    SELECT m.id, m.title, m.date, m.duration, m.status, m.team_id, tm.name as team_name, 'meeting' as type
     FROM meetings m
     LEFT JOIN teams tm ON m.team_id = tm.id
     ${meetingWhere}
@@ -94,8 +94,8 @@ router.post('/export', async (req: Request, res: Response): Promise<void> => {
   const taskParams: unknown[] = []
 
   if (ids && Array.isArray(ids) && ids.length > 0) {
-    const meetingIds = ids.filter((id: string) => id.startsWith('m-'))
-    const taskIds = ids.filter((id: string) => id.startsWith('t-'))
+    const meetingIds = ids as string[]
+    const taskIds = ids as string[]
     if (meetingIds.length > 0) {
       meetingWhere += ` AND m.id IN (${meetingIds.map(() => '?').join(',')})`
       meetingParams.push(...meetingIds)
@@ -150,14 +150,14 @@ router.post('/export', async (req: Request, res: Response): Promise<void> => {
   workbook.created = new Date()
 
   if (meetings.length > 0) {
-    const sheet = workbook.addWorksheet('Meetings')
+    const sheet = workbook.addWorksheet('会议')
     sheet.columns = [
-      { header: 'Title', key: 'title', width: 30 },
-      { header: 'Date', key: 'date', width: 20 },
-      { header: 'Duration(min)', key: 'duration', width: 15 },
-      { header: 'Status', key: 'status', width: 15 },
-      { header: 'Team', key: 'team_name', width: 20 },
-      { header: 'Transcription', key: 'transcription', width: 50 },
+      { header: '会议标题', key: 'title', width: 30 },
+      { header: '日期', key: 'date', width: 20 },
+      { header: '时长(分钟)', key: 'duration', width: 15 },
+      { header: '状态', key: 'status', width: 15 },
+      { header: '团队', key: 'team_name', width: 20 },
+      { header: '纪要', key: 'transcription', width: 50 },
     ]
     meetings.forEach(m => sheet.addRow({
       title: m.title,
@@ -170,14 +170,14 @@ router.post('/export', async (req: Request, res: Response): Promise<void> => {
   }
 
   if (tasks.length > 0) {
-    const sheet = workbook.addWorksheet('Tasks')
+    const sheet = workbook.addWorksheet('待办')
     sheet.columns = [
-      { header: 'Title', key: 'title', width: 30 },
-      { header: 'Description', key: 'description', width: 40 },
-      { header: 'Assignee', key: 'assignee_name', width: 15 },
-      { header: 'Urgency', key: 'urgency', width: 12 },
-      { header: 'Status', key: 'status', width: 12 },
-      { header: 'Deadline', key: 'deadline', width: 20 },
+      { header: '待办标题', key: 'title', width: 30 },
+      { header: '描述', key: 'description', width: 40 },
+      { header: '负责人', key: 'assignee_name', width: 15 },
+      { header: '紧急度', key: 'urgency', width: 12 },
+      { header: '状态', key: 'status', width: 12 },
+      { header: '截止日期', key: 'deadline', width: 20 },
     ]
     tasks.forEach(t => sheet.addRow({
       title: t.title,

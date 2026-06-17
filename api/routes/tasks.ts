@@ -221,8 +221,8 @@ router.post('/:id/remind', (req: Request, res: Response): void => {
   db.prepare('INSERT INTO reminders (id, task_id, type, sent_to, sent_at, status) VALUES (?, ?, ?, ?, ?, ?)')
     .run(reminderId, id, type, sentTo, now, 'sent')
 
-  db.prepare('UPDATE tasks SET remind_count=?, escalation_level=?, updated_at=? WHERE id=?')
-    .run(remindCount, escalationLevel, now, id)
+  db.prepare('UPDATE tasks SET remind_count=?, escalation_level=?, last_reminded_at=?, updated_at=? WHERE id=?')
+    .run(remindCount, escalationLevel, now, now, id)
 
   const isAnomaly = remindCount >= 3 ? 1 : 0
   const logId = uuidv4()

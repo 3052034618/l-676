@@ -1,5 +1,7 @@
 import { Router, type Request, type Response } from 'express'
 import ExcelJS from 'exceljs'
+import jsPDFModule from 'jspdf'
+const jsPDF = (jsPDFModule as any).default || jsPDFModule
 import db from '../database.js'
 
 const router = Router()
@@ -36,7 +38,7 @@ function getMonthlyData(month: string) {
       totalResponseHours += hours
     }
   })
-  const avgResponseHours = completedTasks.length > 0 ? totalResponseHours / completedTasks.length : 0
+  const avgResponseHours = completedTasks.length > 0 ? Math.max(0, totalResponseHours / completedTasks.length) : 0
 
   const overdueBuckets = [
     { range: '1-3天', count: 0 },
@@ -101,66 +103,106 @@ router.get('/monthly/pdf', (req: Request, res: Response): void => {
   const m = (month as string) || new Date().toISOString().substring(0, 7)
   const data = getMonthlyData(m)
 
-  res.setHeader('Content-Type', 'text/html; charset=utf-8')
   const teams = data.teams as Record<string, unknown>[]
   const buckets = data.overdueDistribution as { range: string; count: number }[]
   const totalMeetings = data.totalMeetings as { cnt: number }
 
-  const html = `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<title>会议效率分析报告 - ${m}</title>
-<style>
-body{font-family:"Noto Sans SC",sans-serif;max-width:800px;margin:40px auto;padding:0 20px;color:#1B2A4A}
-h1{text-align:center;color:#1B2A4A;border-bottom:3px solid #FF6B35;padding-bottom:10px}
-h2{color:#FF6B35;margin-top:30px}
-.metric{display:inline-block;width:45%;margin:10px 2%;padding:15px;background:#f8f9fa;border-radius:8px;border-left:4px solid #FF6B35}
-.metric .value{font-size:28px;font-weight:bold;font-family:"JetBrains Mono",monospace;color:#1B2A4A}
-.metric .label{font-size:14px;color:#6b7280}
-table{width:100%;border-collapse:collapse;margin:15px 0}
-th{background:#1B2A4A;color:#fff;padding:10px;text-align:left}
-td{padding:10px;border-bottom:1px solid #e5e7eb}
-tr:hover{background:#f8f9fa}
-.bar{display:inline-block;height:20px;background:#FF6B35;border-radius:3px;min-width:2px}
-.footer{text-align:center;margin-top:40px;padding-top:20px;border-top:1px solid #e5e7eb;color:#9ca3af;font-size:12px}
-@media print{body{margin:0;padding:20px}}
-</style>
-</head>
-<body>
-<h1>会议效率分析报告</h1>
-<p style="text-align:center;color:#6b7280">报告期间：${m}</p>
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
+  const pageW = doc.internal.pageSize.getWidth()
 
-<h2>总体概览</h2>
-<div>
-  <div class="metric"><div class="value">${totalMeetings.cnt}</div><div class="label">会议总数</div></div>
-  <div class="metric"><div class="value">${data.totalTasks}</div><div class="label">待办总数</div></div>
-  <div class="metric"><div class="value">${(data.overallCompletionRate * 100).toFixed(1)}%</div><div class="label">完成率</div></div>
-  <div class="metric"><div class="value">${data.overallAvgResponseTime.toFixed(1)}h</div><div class="label">平均响应耗时</div></div>
-  <div class="metric"><div class="value">${data.completedTasks}</div><div class="label">已完成</div></div>
-  <div class="metric"><div class="value">${data.overdueTasks}</div><div class="label">超时数</div></div>
-</div>
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(20)
+  doc.text('Meeting Efficiency Report', pageW / 2, 25, { align: 'center' })
 
-<h2>团队对比</h2>
-<table>
-<tr><th>团队</th><th>完成率</th><th>平均响应(h)</th><th>会议数</th><th>总时长(min)</th><th>超时数</th></tr>
-${teams.map(t => `<tr><td>${t.team_name}</td><td>${((t.completion_rate as number) * 100).toFixed(1)}%</td><td>${(t.avg_response_hours as number).toFixed(1)}</td><td>${t.total_meetings}</td><td>${t.total_duration}</td><td>${t.overdue_count}</td></tr>`).join('')}
-</table>
+  doc.setFont('helvetica', 'normal')
+  doc.setFontSize(11)
+  doc.text(`Report Period: ${m}`, pageW / 2, 33, { align: 'center' })
 
-<h2>超时分布</h2>
-<table>
-<tr><th>超时范围</th><th>数量</th><th>分布</th></tr>
-${buckets.map(b => {
-    const maxCount = Math.max(...buckets.map(x => x.count), 1)
-    return `<tr><td>${b.range}</td><td>${b.count}</td><td><span class="bar" style="width:${(b.count / maxCount * 200)}px"></span></td></tr>`
-  }).join('')}
-</table>
+  doc.setDrawColor(255, 107, 53)
+  doc.setLineWidth(0.8)
+  doc.line(20, 37, pageW - 20, 37)
 
-<div class="footer">智能会议管理平台 · 自动生成于 ${new Date().toLocaleString('zh-CN')}</div>
-</body>
-</html>`
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(13)
+  doc.text('Overview', 20, 47)
 
-  res.send(html)
+  doc.setFont('helvetica', 'normal')
+  doc.setFontSize(10)
+  const metrics = [
+    [`Total Meetings: ${totalMeetings.cnt}`, `Total Tasks: ${data.totalTasks}`],
+    [`Completed: ${data.completedTasks}`, `Overdue: ${data.overdueTasks}`],
+    [`Completion Rate: ${(data.overallCompletionRate * 100).toFixed(1)}%`, `Avg Response: ${data.overallAvgResponseTime.toFixed(1)}h`],
+  ]
+  let yPos = 54
+  metrics.forEach(row => {
+    doc.text(row[0], 25, yPos)
+    doc.text(row[1], pageW / 2 + 5, yPos)
+    yPos += 7
+  })
+
+  yPos += 5
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(13)
+  doc.text('Team Comparison', 20, yPos)
+
+  yPos += 8
+  doc.setFontSize(9)
+  doc.setFont('helvetica', 'bold')
+  const headers = ['Team', 'Completion', 'Avg Resp(h)', 'Meetings', 'Duration', 'Overdue']
+  const colX = [20, 60, 90, 120, 145, 170]
+  headers.forEach((h, i) => doc.text(h, colX[i], yPos))
+  doc.setDrawColor(200, 200, 200)
+  doc.line(20, yPos + 1, pageW - 20, yPos + 1)
+
+  doc.setFont('helvetica', 'normal')
+  yPos += 7
+  teams.forEach(t => {
+    if (yPos > 270) {
+      doc.addPage()
+      yPos = 20
+    }
+    const row = [
+      String(t.team_name).substring(0, 12),
+      `${((t.completion_rate as number) * 100).toFixed(1)}%`,
+      (t.avg_response_hours as number).toFixed(1),
+      String(t.total_meetings),
+      `${t.total_duration}m`,
+      String(t.overdue_count),
+    ]
+    row.forEach((cell, i) => doc.text(cell, colX[i], yPos))
+    yPos += 6
+  })
+
+  yPos += 8
+  if (yPos > 240) { doc.addPage(); yPos = 20 }
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(13)
+  doc.text('Overdue Distribution', 20, yPos)
+
+  yPos += 8
+  doc.setFontSize(10)
+  doc.setFont('helvetica', 'normal')
+  const maxCount = Math.max(...buckets.map(b => b.count), 1)
+  buckets.forEach(b => {
+    if (yPos > 270) { doc.addPage(); yPos = 20 }
+    doc.text(`${b.range}: ${b.count}`, 25, yPos)
+    const barW = (b.count / maxCount) * 80
+    doc.setFillColor(255, 107, 53)
+    doc.rect(70, yPos - 3.5, barW, 4, 'F')
+    yPos += 8
+  })
+
+  yPos += 10
+  doc.setFontSize(8)
+  doc.setTextColor(150, 150, 150)
+  doc.text(`Generated by Smart Meeting Platform at ${new Date().toLocaleString('zh-CN')}`, pageW / 2, yPos, { align: 'center' })
+
+  const pdfBuffer = Buffer.from(doc.output('arraybuffer'))
+
+  res.setHeader('Content-Type', 'application/pdf')
+  res.setHeader('Content-Disposition', `attachment; filename="report-${m}.pdf"`)
+  res.setHeader('Content-Length', pdfBuffer.length)
+  res.send(pdfBuffer)
 })
 
 router.get('/monthly/excel', async (req: Request, res: Response): Promise<void> => {

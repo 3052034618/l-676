@@ -1,4 +1,6 @@
 import { app, initDatabase } from './app.js';
+import db from './database.js';
+import { startScheduler } from './scheduler.js';
 
 const PORT = process.env.PORT || 3001;
 
@@ -8,21 +10,19 @@ async function start() {
     console.log(`Server ready on port ${PORT}`);
   });
 
-  process.on('SIGTERM', () => {
-    console.log('SIGTERM signal received');
-    server.close(() => {
-      console.log('Server closed');
-      process.exit(0);
-    });
-  });
+  startScheduler();
 
-  process.on('SIGINT', () => {
-    console.log('SIGINT signal received');
+  const shutdown = () => {
+    console.log('Shutdown signal received');
+    try { db.save(); } catch { /* ignore */ }
     server.close(() => {
       console.log('Server closed');
       process.exit(0);
     });
-  });
+  };
+
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
 }
 
 start().catch(err => {

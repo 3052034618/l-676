@@ -27,6 +27,8 @@ interface PreparedStatement {
 
 class DatabaseWrapper {
   private db: SqlJsDatabase | null = null
+  private inTransaction = false
+  private saveTimer: ReturnType<typeof setTimeout> | null = null
 
   async init() {
     const SQL = await initSqlJs()
@@ -51,6 +53,15 @@ class DatabaseWrapper {
     const data = db.export()
     const buffer = Buffer.from(data)
     fs.writeFileSync(dbPath, buffer)
+  }
+
+  private deferredSave() {
+    if (this.inTransaction) return
+    if (this.saveTimer) clearTimeout(this.saveTimer)
+    this.saveTimer = setTimeout(() => {
+      this.save()
+      this.saveTimer = null
+    }, 500)
   }
 
   exec(sql: string) {
@@ -97,6 +108,7 @@ class DatabaseWrapper {
           lastInsertRowid: 0,
         }
         stmt.free()
+        wrapper.deferredSave()
         return result
       },
     }
@@ -104,12 +116,15 @@ class DatabaseWrapper {
 
   transaction(fn: () => void): void {
     const db = this.ensureDb()
+    this.inTransaction = true
     db.run('BEGIN TRANSACTION')
     try {
       fn()
       db.run('COMMIT')
+      this.inTransaction = false
       this.save()
     } catch (e) {
+      this.inTransaction = false
       try { db.run('ROLLBACK') } catch { /* already rolled back */ }
       throw e
     }
@@ -165,6 +180,7 @@ export async function initDatabase() {
       calculated_deadline_reason TEXT DEFAULT '',
       escalation_level INTEGER DEFAULT 0,
       remind_count INTEGER DEFAULT 0,
+      last_reminded_at TEXT,
       completed_at TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -272,9 +288,10 @@ function seedData() {
     dbWrapper.prepare('UPDATE teams SET leader_id = ? WHERE id = ?').run(users[2].id, teams[1].id)
     dbWrapper.prepare('UPDATE teams SET leader_id = ? WHERE id = ?').run(users[5].id, teams[2].id)
 
-    const d = (daysAgo: number) => {
+    const d = (daysAgo: number, hoursOffset = 0) => {
       const date = new Date(now)
       date.setDate(date.getDate() - daysAgo)
+      date.setHours(date.getHours() + hoursOffset)
       return fmt(date)
     }
     const futureD = (daysAhead: number) => {
@@ -296,32 +313,32 @@ function seedData() {
       { id: uuidv4(), title: '客户满意度分析会', date: d(12), duration: 40, status: 'completed', transcription: '客户满意度调查显示，产品易用性和响应速度是主要改进方向。陈明负责整理改进清单。', team_id: teams[1].id },
     ]
 
-    meetings.forEach(m => dbWrapper.prepare('INSERT INTO meetings (id, title, date, duration, status, transcription, team_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(m.id, m.title, m.date, m.duration, m.status, m.transcription, m.team_id, m.date, fmt(now)))
+    meetings.forEach(m => dbWrapper.prepare('INSERT INTO meetings (id, title, date, duration, status, transcription, team_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(m.id, m.title, m.date, m.duration, m.status, m.transcription, m.team_id, m.date, m.date))
 
     const tasks = [
-      { meeting_id: meetings[0].id, title: '完成性能优化方案', description: '针对系统响应速度问题，制定详细优化方案，包括数据库查询优化、缓存策略调整等', assignee_id: users[0].id, urgency: 'high', status: 'completed', deadline: d(7), reason: '紧急度high，基准3天，历史平均响应时间调整+4天', escalation: 0, remind: 0, completed_at: d(8) },
-      { meeting_id: meetings[0].id, title: '整理新功能需求清单', description: '汇总各业务线新功能需求，按优先级排序并输出需求文档', assignee_id: users[1].id, urgency: 'medium', status: 'completed', deadline: d(4), reason: '紧急度medium，基准5天，历史平均响应时间调整+0天', escalation: 0, remind: 0, completed_at: d(5) },
-      { meeting_id: meetings[0].id, title: '完成用户调研报告', description: '对核心用户群进行深度调研，输出调研报告', assignee_id: users[3].id, urgency: 'medium', status: 'completed', deadline: d(2), reason: '紧急度medium，基准5天，历史平均响应时间调整-3天', escalation: 0, remind: 0, completed_at: d(3) },
-      { meeting_id: meetings[1].id, title: '智能推荐功能原型设计', description: '设计智能推荐功能的交互原型和视觉方案', assignee_id: users[3].id, urgency: 'high', status: 'in_progress', deadline: futureD(3), reason: '紧急度high，基准3天，历史平均响应时间调整+0天', escalation: 0, remind: 1, completed_at: null },
-      { meeting_id: meetings[1].id, title: '数据看板需求分析', description: '分析数据看板所需的数据指标和展示形式', assignee_id: users[0].id, urgency: 'medium', status: 'in_progress', deadline: futureD(5), reason: '紧急度medium，基准5天，历史平均响应时间调整+0天', escalation: 0, remind: 0, completed_at: null },
-      { meeting_id: meetings[2].id, title: '社交媒体推广方案', description: '制定下半年社交媒体推广计划，包括平台选择、内容规划、投放策略', assignee_id: users[4].id, urgency: 'high', status: 'in_progress', deadline: futureD(2), reason: '紧急度high，基准3天，历史平均响应时间调整-1天', escalation: 0, remind: 1, completed_at: null },
-      { meeting_id: meetings[2].id, title: '内容营销选题策划', description: '策划Q3内容营销选题，输出内容日历', assignee_id: users[2].id, urgency: 'low', status: 'pending', deadline: futureD(7), reason: '紧急度low，基准7天，历史平均响应时间调整+0天', escalation: 0, remind: 0, completed_at: null },
-      { meeting_id: meetings[3].id, title: '自动化工具选型评估', description: '调研并评估3-5款自动化运营工具，输出对比报告', assignee_id: users[5].id, urgency: 'critical', status: 'overdue', deadline: d(1), reason: '紧急度critical，基准1天，历史平均响应时间调整+0天', escalation: 2, remind: 3, completed_at: null },
-      { meeting_id: meetings[3].id, title: '运营流程梳理', description: '梳理当前运营流程，识别自动化改造机会点', assignee_id: users[5].id, urgency: 'high', status: 'overdue', deadline: d(2), reason: '紧急度high，基准3天，历史平均响应时间调整-1天', escalation: 1, remind: 2, completed_at: null },
-      { meeting_id: meetings[4].id, title: 'UX改版方案设计', description: '根据用户反馈设计界面优化方案', assignee_id: users[3].id, urgency: 'high', status: 'pending', deadline: futureD(4), reason: '紧急度high，基准3天，历史平均响应时间调整+1天', escalation: 0, remind: 0, completed_at: null },
-      { meeting_id: meetings[4].id, title: '前端性能优化', description: '优化首屏加载速度和交互响应', assignee_id: users[0].id, urgency: 'critical', status: 'in_progress', deadline: futureD(1), reason: '紧急度critical，基准1天，历史平均响应时间调整+0天', escalation: 0, remind: 1, completed_at: null },
-      { meeting_id: meetings[8].id, title: '微服务架构设计方案', description: '输出微服务架构设计文档，包括服务拆分、通信协议、部署方案', assignee_id: users[0].id, urgency: 'critical', status: 'completed', deadline: d(13), reason: '紧急度critical，基准1天，历史平均响应时间调整+0天', escalation: 0, remind: 0, completed_at: d(14) },
-      { meeting_id: meetings[8].id, title: '迁移计划制定', description: '制定分阶段迁移计划，包括时间节点和风险评估', assignee_id: users[1].id, urgency: 'high', status: 'completed', deadline: d(10), reason: '紧急度high，基准3天，历史平均响应时间调整-2天', escalation: 0, remind: 0, completed_at: d(11) },
-      { meeting_id: meetings[9].id, title: '客户满意度改进清单', description: '根据调研结果整理产品改进清单', assignee_id: users[4].id, urgency: 'medium', status: 'completed', deadline: d(5), reason: '紧急度medium，基准5天，历史平均响应时间调整-2天', escalation: 0, remind: 0, completed_at: d(6) },
-      { meeting_id: meetings[5].id, title: '竞品功能对比分析', description: '对比主要竞品的核心功能差异', assignee_id: users[4].id, urgency: 'medium', status: 'pending', deadline: futureD(5), reason: '紧急度medium，基准5天，历史平均响应时间调整+0天', escalation: 0, remind: 0, completed_at: null },
-      { meeting_id: meetings[6].id, title: 'Q3复盘报告撰写', description: '汇总Q3各部门工作成果和问题', assignee_id: users[1].id, urgency: 'high', status: 'pending', deadline: futureD(3), reason: '紧急度high，基准3天，历史平均响应时间调整+0天', escalation: 0, remind: 0, completed_at: null },
-      { meeting_id: meetings[7].id, title: '品牌视觉升级方案', description: '设计新品牌视觉识别系统', assignee_id: users[2].id, urgency: 'low', status: 'pending', deadline: futureD(7), reason: '紧急度low，基准7天，历史平均响应时间调整+0天', escalation: 0, remind: 0, completed_at: null },
+      { meeting_id: meetings[0].id, title: '完成性能优化方案', description: '针对系统响应速度问题，制定详细优化方案，包括数据库查询优化、缓存策略调整等', assignee_id: users[0].id, urgency: 'high', status: 'completed', deadline: d(7), reason: '紧急度high，基准3天，历史平均响应时间调整+4天', escalation: 0, remind: 0, last_reminded_at: null, completed_at: d(7, 6), created_at: d(14), updated_at: d(7, 6) },
+      { meeting_id: meetings[0].id, title: '整理新功能需求清单', description: '汇总各业务线新功能需求，按优先级排序并输出需求文档', assignee_id: users[1].id, urgency: 'medium', status: 'completed', deadline: d(4), reason: '紧急度medium，基准5天，历史平均响应时间调整+0天', escalation: 0, remind: 0, last_reminded_at: null, completed_at: d(5, 3), created_at: d(14), updated_at: d(5, 3) },
+      { meeting_id: meetings[0].id, title: '完成用户调研报告', description: '对核心用户群进行深度调研，输出调研报告', assignee_id: users[3].id, urgency: 'medium', status: 'completed', deadline: d(2), reason: '紧急度medium，基准5天，历史平均响应时间调整-3天', escalation: 0, remind: 0, last_reminded_at: null, completed_at: d(3, 8), created_at: d(14), updated_at: d(3, 8) },
+      { meeting_id: meetings[1].id, title: '智能推荐功能原型设计', description: '设计智能推荐功能的交互原型和视觉方案', assignee_id: users[3].id, urgency: 'high', status: 'in_progress', deadline: futureD(3), reason: '紧急度high，基准3天，历史平均响应时间调整+0天', escalation: 0, remind: 1, last_reminded_at: d(1), completed_at: null, created_at: d(10), updated_at: d(1) },
+      { meeting_id: meetings[1].id, title: '数据看板需求分析', description: '分析数据看板所需的数据指标和展示形式', assignee_id: users[0].id, urgency: 'medium', status: 'in_progress', deadline: futureD(5), reason: '紧急度medium，基准5天，历史平均响应时间调整+0天', escalation: 0, remind: 0, last_reminded_at: null, completed_at: null, created_at: d(10), updated_at: d(2) },
+      { meeting_id: meetings[2].id, title: '社交媒体推广方案', description: '制定下半年社交媒体推广计划，包括平台选择、内容规划、投放策略', assignee_id: users[4].id, urgency: 'high', status: 'in_progress', deadline: futureD(2), reason: '紧急度high，基准3天，历史平均响应时间调整-1天', escalation: 0, remind: 1, last_reminded_at: d(1), completed_at: null, created_at: d(7), updated_at: d(1) },
+      { meeting_id: meetings[2].id, title: '内容营销选题策划', description: '策划Q3内容营销选题，输出内容日历', assignee_id: users[2].id, urgency: 'low', status: 'pending', deadline: futureD(7), reason: '紧急度low，基准7天，历史平均响应时间调整+0天', escalation: 0, remind: 0, last_reminded_at: null, completed_at: null, created_at: d(7), updated_at: d(7) },
+      { meeting_id: meetings[3].id, title: '自动化工具选型评估', description: '调研并评估3-5款自动化运营工具，输出对比报告', assignee_id: users[5].id, urgency: 'critical', status: 'overdue', deadline: d(1), reason: '紧急度critical，基准1天，历史平均响应时间调整+0天', escalation: 2, remind: 3, last_reminded_at: d(0), completed_at: null, created_at: d(5), updated_at: d(0) },
+      { meeting_id: meetings[3].id, title: '运营流程梳理', description: '梳理当前运营流程，识别自动化改造机会点', assignee_id: users[5].id, urgency: 'high', status: 'overdue', deadline: d(2), reason: '紧急度high，基准3天，历史平均响应时间调整-1天', escalation: 1, remind: 2, last_reminded_at: d(0), completed_at: null, created_at: d(5), updated_at: d(0) },
+      { meeting_id: meetings[4].id, title: 'UX改版方案设计', description: '根据用户反馈设计界面优化方案', assignee_id: users[3].id, urgency: 'high', status: 'pending', deadline: futureD(4), reason: '紧急度high，基准3天，历史平均响应时间调整+1天', escalation: 0, remind: 0, last_reminded_at: null, completed_at: null, created_at: d(3), updated_at: d(3) },
+      { meeting_id: meetings[4].id, title: '前端性能优化', description: '优化首屏加载速度和交互响应', assignee_id: users[0].id, urgency: 'critical', status: 'in_progress', deadline: futureD(1), reason: '紧急度critical，基准1天，历史平均响应时间调整+0天', escalation: 0, remind: 1, last_reminded_at: d(1), completed_at: null, created_at: d(3), updated_at: d(1) },
+      { meeting_id: meetings[8].id, title: '微服务架构设计方案', description: '输出微服务架构设计文档，包括服务拆分、通信协议、部署方案', assignee_id: users[0].id, urgency: 'critical', status: 'completed', deadline: d(13), reason: '紧急度critical，基准1天，历史平均响应时间调整+0天', escalation: 0, remind: 0, last_reminded_at: null, completed_at: d(14, 5), created_at: d(20), updated_at: d(14, 5) },
+      { meeting_id: meetings[8].id, title: '迁移计划制定', description: '制定分阶段迁移计划，包括时间节点和风险评估', assignee_id: users[1].id, urgency: 'high', status: 'completed', deadline: d(10), reason: '紧急度high，基准3天，历史平均响应时间调整-2天', escalation: 0, remind: 0, last_reminded_at: null, completed_at: d(12, 2), created_at: d(20), updated_at: d(12, 2) },
+      { meeting_id: meetings[9].id, title: '客户满意度改进清单', description: '根据调研结果整理产品改进清单', assignee_id: users[4].id, urgency: 'medium', status: 'completed', deadline: d(5), reason: '紧急度medium，基准5天，历史平均响应时间调整-2天', escalation: 0, remind: 0, last_reminded_at: null, completed_at: d(6, 4), created_at: d(12), updated_at: d(6, 4) },
+      { meeting_id: meetings[5].id, title: '竞品功能对比分析', description: '对比主要竞品的核心功能差异', assignee_id: users[4].id, urgency: 'medium', status: 'pending', deadline: futureD(5), reason: '紧急度medium，基准5天，历史平均响应时间调整+0天', escalation: 0, remind: 0, last_reminded_at: null, completed_at: null, created_at: d(2), updated_at: d(2) },
+      { meeting_id: meetings[6].id, title: 'Q3复盘报告撰写', description: '汇总Q3各部门工作成果和问题', assignee_id: users[1].id, urgency: 'high', status: 'pending', deadline: futureD(3), reason: '紧急度high，基准3天，历史平均响应时间调整+0天', escalation: 0, remind: 0, last_reminded_at: null, completed_at: null, created_at: d(1), updated_at: d(1) },
+      { meeting_id: meetings[7].id, title: '品牌视觉升级方案', description: '设计新品牌视觉识别系统', assignee_id: users[2].id, urgency: 'low', status: 'pending', deadline: futureD(7), reason: '紧急度low，基准7天，历史平均响应时间调整+0天', escalation: 0, remind: 0, last_reminded_at: null, completed_at: null, created_at: futureD(2), updated_at: futureD(2) },
     ]
 
     tasks.forEach(t => {
       const id = uuidv4()
-      dbWrapper.prepare('INSERT INTO tasks (id, meeting_id, title, description, assignee_id, urgency, status, deadline, calculated_deadline_reason, escalation_level, remind_count, completed_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(id, t.meeting_id, t.title, t.description, t.assignee_id, t.urgency, t.status, t.deadline, t.reason, t.escalation, t.remind, t.completed_at, fmt(now), fmt(now))
+      dbWrapper.prepare('INSERT INTO tasks (id, meeting_id, title, description, assignee_id, urgency, status, deadline, calculated_deadline_reason, escalation_level, remind_count, last_reminded_at, completed_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(id, t.meeting_id, t.title, t.description, t.assignee_id, t.urgency, t.status, t.deadline, t.reason, t.escalation, t.remind, t.last_reminded_at, t.completed_at, t.created_at, t.updated_at)
     })
 
     const materials = [
