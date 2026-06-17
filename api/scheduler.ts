@@ -19,11 +19,44 @@ export function startScheduler() {
   console.log('Task scheduler started (checks every hour)')
 }
 
+function getSupervisorAndDeptHead(assigneeId: string): { supervisorId: string | null; deptHeadId: string | null; supervisorName: string; deptHeadName: string } {
+  const row = db.prepare(`
+    SELECT u.supervisor_id, t.leader_id as dept_head_id,
+           s.name as supervisor_name, l.name as dept_head_name
+    FROM users u
+    LEFT JOIN users s ON u.supervisor_id = s.id
+    LEFT JOIN teams t ON u.team_id = t.id
+    LEFT JOIN users l ON t.leader_id = l.id
+    WHERE u.id = ?
+  `).get(assigneeId) as Record<string, unknown> | undefined
+
+  return {
+    supervisorId: (row?.supervisor_id as string) || null,
+    deptHeadId: (row?.dept_head_id as string) || null,
+    supervisorName: (row?.supervisor_name as string) || '',
+    deptHeadName: (row?.dept_head_name as string) || '',
+  }
+}
+
+function insertReminder(taskId: string, type: string, sentTo: string, recipientType: string, sentAt: string) {
+  const reminderId = uuidv4()
+  db.prepare(
+    'INSERT INTO reminders (id, task_id, type, sent_to, recipient_type, sent_at, status) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  ).run(reminderId, taskId, type, sentTo, recipientType, sentAt, 'sent')
+}
+
+function insertLog(type: string, detail: string, operatorId: string | null, relatedId: string | null, isAnomaly: number, createdAt: string) {
+  const logId = uuidv4()
+  db.prepare(
+    'INSERT INTO logs (id, type, detail, operator_id, related_id, is_anomaly, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  ).run(logId, type, detail, operatorId, relatedId, isAnomaly, createdAt)
+}
+
 function processOverdueTasks() {
   const now = new Date().toISOString().replace('T', ' ').substring(0, 19)
 
   const overdueTasks = db.prepare(`
-    SELECT t.*, u.name as assignee_name, u.supervisor_id, u.team_id
+    SELECT t.*, u.name as assignee_name
     FROM tasks t
     LEFT JOIN users u ON t.assignee_id = u.id
     WHERE t.status NOT IN ('completed') AND t.deadline < ?
@@ -32,6 +65,8 @@ function processOverdueTasks() {
   for (const task of overdueTasks) {
     const taskId = task.id as string
     const lastReminded = task.last_reminded_at as string | null
+    const prevRemindCount = (task.remind_count as number) || 0
+    const prevEscalationLevel = (task.escalation_level as number) || 0
 
     if (lastReminded) {
       const lastTime = new Date(lastReminded).getTime()
@@ -43,42 +78,66 @@ function processOverdueTasks() {
       if (hoursSinceDeadline < 24) continue
     }
 
-    const remindCount = ((task.remind_count as number) || 0) + 1
-    let sentTo = task.assignee_id as string
-    let reminderType = 'auto_remind'
-    let escalationLevel = task.escalation_level as number
-    let isAnomaly = 0
+    const remindCount = prevRemindCount + 1
+    let escalationLevel = prevEscalationLevel
 
-    if (remindCount >= 2 && task.supervisor_id) {
-      sentTo = task.supervisor_id as string
-      reminderType = 'escalation'
-      escalationLevel = Math.min(escalationLevel + 1, 3)
-      isAnomaly = 1
+    const { supervisorId, deptHeadId, supervisorName, deptHeadName } = getSupervisorAndDeptHead(task.assignee_id as string)
+
+    const isFirstEscalation = prevRemindCount < 2 && remindCount >= 2
+    const isFirstAnomaly = prevRemindCount < 4 && remindCount >= 4
+
+    if (isFirstEscalation && supervisorId) {
+      escalationLevel = Math.max(escalationLevel, 1)
     }
 
-    if (remindCount >= 4) {
-      isAnomaly = 1
+    insertReminder(taskId, 'auto_remind', task.assignee_id as string, 'assignee', now)
+
+    if (remindCount >= 2) {
+      if (supervisorId && supervisorId !== task.assignee_id) {
+        insertReminder(taskId, 'escalation', supervisorId, 'supervisor', now)
+      }
+      if (deptHeadId && deptHeadId !== supervisorId && deptHeadId !== task.assignee_id) {
+        insertReminder(taskId, 'escalation', deptHeadId, 'dept_head', now)
+      }
     }
 
-    const reminderId = uuidv4()
-    db.prepare('INSERT INTO reminders (id, task_id, type, sent_to, sent_at, status) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(reminderId, taskId, reminderType, sentTo, now, 'sent')
+    db.prepare(
+      'UPDATE tasks SET remind_count=?, escalation_level=?, last_reminded_at=?, status=?, updated_at=? WHERE id=?'
+    ).run(remindCount, escalationLevel, now, 'overdue', now, taskId)
 
-    db.prepare('UPDATE tasks SET remind_count=?, escalation_level=?, last_reminded_at=?, status=?, updated_at=? WHERE id=?')
-      .run(remindCount, escalationLevel, now, 'overdue', now, taskId)
+    insertLog(
+      'remind',
+      `自动催办：待办"${task.title}"已超期，第${remindCount}次提醒负责人`,
+      task.assignee_id as string,
+      taskId,
+      0,
+      now
+    )
 
-    const logDetail = reminderType === 'escalation'
-      ? `自动升级：待办"${task.title}"连续${remindCount}次催办未处理，已通知主管`
-      : `自动催办：待办"${task.title}"已超期，第${remindCount}次提醒`
+    if (isFirstEscalation) {
+      const names: string[] = []
+      if (supervisorName) names.push(`直属主管(${supervisorName})`)
+      if (deptHeadName && deptHeadName !== supervisorName) names.push(`部门负责人(${deptHeadName})`)
+      const notified = names.length > 0 ? names.join('、') : '相关负责人'
+      insertLog(
+        'escalation',
+        `自动升级：待办"${task.title}"连续${remindCount}次催办未处理，已通知${notified}`,
+        task.assignee_id as string,
+        taskId,
+        1,
+        now
+      )
+    }
 
-    const logId = uuidv4()
-    db.prepare('INSERT INTO logs (id, type, detail, operator_id, related_id, is_anomaly, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(logId, reminderType === 'escalation' ? 'escalation' : 'remind', logDetail, task.assignee_id, taskId, isAnomaly, now)
-
-    if (remindCount >= 4) {
-      const anomalyLogId = uuidv4()
-      db.prepare('INSERT INTO logs (id, type, detail, operator_id, related_id, is_anomaly, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(anomalyLogId, 'anomaly', `异常：待办"${task.title}"持续超期，催办${remindCount}次均未处理`, task.assignee_id, taskId, 1, now)
+    if (isFirstAnomaly) {
+      insertLog(
+        'anomaly',
+        `异常：待办"${task.title}"持续超期，催办${remindCount}次均未处理`,
+        task.assignee_id as string,
+        taskId,
+        1,
+        now
+      )
     }
   }
 

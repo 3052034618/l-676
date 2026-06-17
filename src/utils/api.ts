@@ -63,6 +63,8 @@ export interface Reminder {
   task_id: string;
   type: string;
   sent_to: string;
+  sent_to_name?: string;
+  recipient_type: 'assignee' | 'supervisor' | 'dept_head';
   sent_at: string;
   status: string;
 }

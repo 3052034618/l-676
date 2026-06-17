@@ -125,7 +125,13 @@ router.get('/:id', (req: Request, res: Response): void => {
     return
   }
 
-  const reminders = db.prepare('SELECT * FROM reminders WHERE task_id = ? ORDER BY sent_at DESC').all(id)
+  const reminders = db.prepare(`
+    SELECT r.*, u.name as sent_to_name
+    FROM reminders r
+    LEFT JOIN users u ON r.sent_to = u.id
+    WHERE r.task_id = ?
+    ORDER BY r.sent_at DESC
+  `).all(id)
   res.json({ success: true, data: { ...(task as Record<string, unknown>), reminders } })
 })
 
@@ -193,7 +199,7 @@ router.put('/:id', (req: Request, res: Response): void => {
 router.post('/:id/remind', (req: Request, res: Response): void => {
   const { id } = req.params
   const task = db.prepare(`
-    SELECT t.*, u.name as assignee_name, u.supervisor_id
+    SELECT t.*, u.name as assignee_name, u.supervisor_id, u.team_id
     FROM tasks t
     LEFT JOIN users u ON t.assignee_id = u.id
     WHERE t.id = ?
@@ -205,39 +211,79 @@ router.post('/:id/remind', (req: Request, res: Response): void => {
   }
 
   const now = new Date().toISOString().replace('T', ' ').substring(0, 19)
-  const remindCount = ((task.remind_count as number) || 0) + 1
+  const prevRemindCount = (task.remind_count as number) || 0
+  const remindCount = prevRemindCount + 1
 
-  let sentTo = task.assignee_id as string
-  let type = 'manual_remind'
-  let escalationLevel = task.escalation_level as number
+  const prevEscalationLevel = (task.escalation_level as number) || 0
+  let escalationLevel = prevEscalationLevel
 
-  if (remindCount >= 2 && task.supervisor_id) {
-    sentTo = task.supervisor_id as string
-    type = 'escalation'
-    escalationLevel = Math.min(escalationLevel + 1, 3)
+  const teamRow = db.prepare(`
+    SELECT t.leader_id as dept_head_id, u.name as dept_head_name
+    FROM teams t
+    LEFT JOIN users u ON t.leader_id = u.id
+    WHERE t.id = ?
+  `).get(task.team_id as string) as Record<string, unknown> | undefined
+
+  const supervisorId = task.supervisor_id as string | null
+  const deptHeadId = teamRow?.dept_head_id as string | null || null
+  const deptHeadName = teamRow?.dept_head_name as string || ''
+
+  const supervisorRow = supervisorId
+    ? db.prepare('SELECT name FROM users WHERE id = ?').get(supervisorId) as { name: string } | undefined
+    : undefined
+  const supervisorName = supervisorRow?.name || ''
+
+  const isFirstEscalation = prevRemindCount < 2 && remindCount >= 2
+  const isFirstAnomaly = prevRemindCount < 3 && remindCount >= 3
+
+  if (isFirstEscalation && supervisorId) {
+    escalationLevel = Math.max(escalationLevel, 1)
   }
 
   const reminderId = uuidv4()
-  db.prepare('INSERT INTO reminders (id, task_id, type, sent_to, sent_at, status) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(reminderId, id, type, sentTo, now, 'sent')
+  db.prepare(
+    'INSERT INTO reminders (id, task_id, type, sent_to, recipient_type, sent_at, status) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  ).run(reminderId, id, 'manual_remind', task.assignee_id as string, 'assignee', now, 'sent')
+
+  if (remindCount >= 2) {
+    if (supervisorId && supervisorId !== task.assignee_id) {
+      const supReminderId = uuidv4()
+      db.prepare(
+        'INSERT INTO reminders (id, task_id, type, sent_to, recipient_type, sent_at, status) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).run(supReminderId, id, 'escalation', supervisorId, 'supervisor', now, 'sent')
+    }
+    if (deptHeadId && deptHeadId !== supervisorId && deptHeadId !== task.assignee_id) {
+      const deptReminderId = uuidv4()
+      db.prepare(
+        'INSERT INTO reminders (id, task_id, type, sent_to, recipient_type, sent_at, status) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).run(deptReminderId, id, 'escalation', deptHeadId, 'dept_head', now, 'sent')
+    }
+  }
 
   db.prepare('UPDATE tasks SET remind_count=?, escalation_level=?, last_reminded_at=?, updated_at=? WHERE id=?')
     .run(remindCount, escalationLevel, now, now, id)
 
-  const isAnomaly = remindCount >= 3 ? 1 : 0
+  const logType = isFirstEscalation ? 'escalation' : 'remind'
+
+  let logDetail = `手动催办：待办"${task.title}"第${remindCount}次催办`
+  if (isFirstEscalation) {
+    const names: string[] = []
+    if (supervisorName) names.push(`直属主管(${supervisorName})`)
+    if (deptHeadName && deptHeadName !== supervisorName) names.push(`部门负责人(${deptHeadName})`)
+    const notified = names.length > 0 ? names.join('、') : '相关负责人'
+    logDetail = `手动升级：待办"${task.title}"第${remindCount}次催办未处理，已通知${notified}`
+  }
+
+  const isAnomaly = isFirstAnomaly ? 1 : 0
   const logId = uuidv4()
   db.prepare('INSERT INTO logs (id, type, detail, operator_id, related_id, is_anomaly, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .run(logId, type === 'escalation' ? 'escalation' : 'remind',
-      `催办：待办"${task.title}"第${remindCount}次催办，发送至${sentTo}`,
-      task.assignee_id, id, isAnomaly, now)
+    .run(logId, logType, logDetail, task.assignee_id, id, isAnomaly, now)
 
   res.json({
     success: true,
     data: {
       remind_count: remindCount,
       escalation_level: escalationLevel,
-      sent_to: sentTo,
-      type,
     },
   })
 })

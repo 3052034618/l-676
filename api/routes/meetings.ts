@@ -119,11 +119,9 @@ router.post('/', (req: Request, res: Response): void => {
 
   const meeting = db.prepare('SELECT * FROM meetings WHERE id = ?').get(id)
 
-  if (team_id) {
-    const logId = uuidv4()
-    db.prepare('INSERT INTO logs (id, type, detail, operator_id, related_id, is_anomaly, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(logId, 'recording', `创建会议：${title}`, null, id, 0, now)
-  }
+  const logId = uuidv4()
+  db.prepare('INSERT INTO logs (id, type, detail, operator_id, related_id, is_anomaly, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(logId, 'recording', `创建会议：${title}`, null, id, 0, now)
 
   res.status(201).json({ success: true, data: meeting })
 })

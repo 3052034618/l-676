@@ -6,39 +6,82 @@ import db from '../database.js'
 
 const router = Router()
 
+function computeTeamMetrics(month: string): Record<string, unknown>[] {
+  const teams = db.prepare('SELECT * FROM teams ORDER BY name').all() as Record<string, unknown>[]
+  const now = new Date().toISOString().replace('T', ' ').substring(0, 19)
+
+  return teams.map(team => {
+    const teamId = team.id as string
+
+    const meetings = db.prepare(`
+      SELECT m.* FROM meetings m
+      WHERE m.team_id = ? AND strftime('%Y-%m', m.date) = ?
+    `).all(teamId, month) as Record<string, unknown>[]
+
+    const totalMeetings = meetings.length
+    const totalDuration = meetings.reduce((sum, m) => sum + ((m.duration as number) || 0), 0)
+
+    const tasks = db.prepare(`
+      SELECT t.* FROM tasks t
+      LEFT JOIN meetings m ON t.meeting_id = m.id
+      WHERE m.team_id = ? AND strftime('%Y-%m', m.date) = ?
+    `).all(teamId, month) as Record<string, unknown>[]
+
+    const totalTasks = tasks.length
+    const completedTasks = tasks.filter(t => t.status === 'completed')
+    const completionRate = totalTasks > 0 ? completedTasks.length / totalTasks : 0
+
+    let totalResponseHours = 0
+    completedTasks.forEach(t => {
+      if (t.completed_at && t.created_at) {
+        const hours = (new Date(t.completed_at as string).getTime() - new Date(t.created_at as string).getTime()) / (1000 * 60 * 60)
+        totalResponseHours += Math.max(0, hours)
+      }
+    })
+    const avgResponseHours = completedTasks.length > 0 ? totalResponseHours / completedTasks.length : 0
+
+    const overdueCount = tasks.filter(t =>
+      t.status !== 'completed' && (t.deadline as string) < now
+    ).length
+
+    return {
+      team_id: teamId,
+      team_name: team.name,
+      completion_rate: completionRate,
+      avg_response_hours: avgResponseHours,
+      total_meetings: totalMeetings,
+      total_duration: totalDuration,
+      overdue_count: overdueCount,
+    }
+  })
+}
+
 function getMonthlyData(month: string) {
-  const teamReports = db.prepare(`
-    SELECT r.*, t.name as team_name
-    FROM reports r
-    LEFT JOIN teams t ON r.team_id = t.id
-    WHERE r.month = ?
-    ORDER BY t.name
-  `).all(month)
+  const teamReports = computeTeamMetrics(month)
 
   const allTasks = db.prepare(`
     SELECT t.* FROM tasks t
     LEFT JOIN meetings m ON t.meeting_id = m.id
     WHERE strftime('%Y-%m', m.date) = ?
-  `).all(month)
+  `).all(month) as Record<string, unknown>[]
 
   const total = allTasks.length
-  const completed = allTasks.filter((t: Record<string, unknown>) => t.status === 'completed').length
-  const overdue = allTasks.filter((t: Record<string, unknown>) => t.status === 'overdue').length
+  const completed = allTasks.filter(t => t.status === 'completed').length
 
   const now = new Date().toISOString().replace('T', ' ').substring(0, 19)
-  const actualOverdue = allTasks.filter((t: Record<string, unknown>) =>
+  const actualOverdue = allTasks.filter(t =>
     t.status !== 'completed' && (t.deadline as string) < now
   ).length
 
-  const completedTasks = allTasks.filter((t: Record<string, unknown>) => t.status === 'completed')
+  const completedTasks = allTasks.filter(t => t.status === 'completed')
   let totalResponseHours = 0
-  completedTasks.forEach((t: Record<string, unknown>) => {
+  completedTasks.forEach(t => {
     if (t.completed_at && t.created_at) {
       const hours = (new Date(t.completed_at as string).getTime() - new Date(t.created_at as string).getTime()) / (1000 * 60 * 60)
-      totalResponseHours += hours
+      totalResponseHours += Math.max(0, hours)
     }
   })
-  const avgResponseHours = completedTasks.length > 0 ? Math.max(0, totalResponseHours / completedTasks.length) : 0
+  const avgResponseHours = completedTasks.length > 0 ? totalResponseHours / completedTasks.length : 0
 
   const overdueBuckets = [
     { range: '1-3天', count: 0 },
@@ -46,8 +89,10 @@ function getMonthlyData(month: string) {
     { range: '7-14天', count: 0 },
     { range: '14天以上', count: 0 },
   ]
-  const overdueTasks = allTasks.filter((t: Record<string, unknown>) => t.status === 'overdue' || (t.status !== 'completed' && (t.deadline as string) < now))
-  overdueTasks.forEach((t: Record<string, unknown>) => {
+  const overdueTasks = allTasks.filter(t =>
+    t.status !== 'completed' && (t.deadline as string) < now
+  )
+  overdueTasks.forEach(t => {
     const diffDays = (Date.now() - new Date(t.deadline as string).getTime()) / (1000 * 60 * 60 * 24)
     if (diffDays <= 3) overdueBuckets[0].count++
     else if (diffDays <= 7) overdueBuckets[1].count++
@@ -58,24 +103,23 @@ function getMonthlyData(month: string) {
   const currentMonthDate = new Date(month + '-01')
   const lastMonth = new Date(currentMonthDate.getFullYear(), currentMonthDate.getMonth() - 1, 1)
     .toISOString().substring(0, 7)
+  const lastTeamReports = computeTeamMetrics(lastMonth)
 
-  const lastTeamReports = db.prepare(`
-    SELECT r.*, t.name as team_name
-    FROM reports r
-    LEFT JOIN teams t ON r.team_id = t.id
-    WHERE r.month = ?
-  `).all(lastMonth)
-
-  const vsLastMonth: Record<string, unknown> = {}
-  const lastMap = new Map(lastTeamReports.map((r: Record<string, unknown>) => [r.team_id, r]))
-  teamReports.forEach((r: Record<string, unknown>) => {
-    const last = lastMap.get(r.team_id) as Record<string, unknown> | undefined
-    vsLastMonth[r.team_id as string] = {
+  const vsLastMonth: Record<string, Record<string, number>> = {}
+  const lastMap = new Map(lastTeamReports.map(r => [r.team_id as string, r]))
+  teamReports.forEach(r => {
+    const teamId = r.team_id as string
+    const last = lastMap.get(teamId) as Record<string, unknown> | undefined
+    vsLastMonth[teamId] = {
       completion_rate_change: last ? (r.completion_rate as number) - (last.completion_rate as number) : 0,
       avg_response_hours_change: last ? (r.avg_response_hours as number) - (last.avg_response_hours as number) : 0,
       overdue_count_change: last ? (r.overdue_count as number) - (last.overdue_count as number) : 0,
     }
   })
+
+  const totalMeetingsRow = db.prepare(
+    `SELECT COUNT(*) as cnt FROM meetings WHERE strftime('%Y-%m', date) = ?`
+  ).get(month) as { cnt: number }
 
   return {
     month,
@@ -83,7 +127,7 @@ function getMonthlyData(month: string) {
     overallCompletionRate: total > 0 ? completed / total : 0,
     overallAvgResponseTime: avgResponseHours,
     overdueDistribution: overdueBuckets,
-    totalMeetings: db.prepare(`SELECT COUNT(*) as cnt FROM meetings WHERE strftime('%Y-%m', date) = ?`).get(month) as { cnt: number },
+    totalMeetings: totalMeetingsRow,
     totalTasks: total,
     completedTasks: completed,
     overdueTasks: actualOverdue,

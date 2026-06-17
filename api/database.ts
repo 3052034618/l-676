@@ -228,6 +228,7 @@ export async function initDatabase() {
       task_id TEXT NOT NULL,
       type TEXT NOT NULL,
       sent_to TEXT NOT NULL,
+      recipient_type TEXT NOT NULL DEFAULT 'assignee',
       sent_at TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'sent',
       FOREIGN KEY (task_id) REFERENCES tasks(id)
@@ -249,6 +250,14 @@ export async function initDatabase() {
       CREATE INDEX IF NOT EXISTS idx_materials_meeting ON materials(meeting_id);
     `)
   } catch { /* indexes may already exist */ }
+
+  try {
+    const cols = dbWrapper.prepare('PRAGMA table_info(reminders)').all() as { name: string }[]
+    const hasRecipientType = cols.some(c => c.name === 'recipient_type')
+    if (!hasRecipientType) {
+      dbWrapper.exec(`ALTER TABLE reminders ADD COLUMN recipient_type TEXT NOT NULL DEFAULT 'assignee'`)
+    }
+  } catch { /* migration may fail on older schemas, ignore */ }
 
   seedData()
 }

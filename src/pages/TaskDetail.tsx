@@ -1,13 +1,19 @@
 import { useState, useEffect } from 'react';
-import { X, User, Clock, AlertTriangle, Bell, ArrowUpCircle, BellRing } from 'lucide-react';
+import { X, User, Clock, AlertTriangle, Bell, ArrowUpCircle, BellRing, UserCheck, Building2 } from 'lucide-react';
 import { useAppStore } from '@/stores/appStore';
 import StatusBadge from '@/components/StatusBadge';
-import type { Task } from '@/utils/api';
+import type { Task, Reminder } from '@/utils/api';
 
 interface TaskDetailProps {
   task: Task;
   onClose: () => void;
 }
+
+const recipientLabels: Record<string, { label: string; icon: typeof User; color: string }> = {
+  assignee: { label: '负责人', icon: User, color: 'var(--color-accent)' },
+  supervisor: { label: '直属主管', icon: UserCheck, color: 'var(--color-warning)' },
+  dept_head: { label: '部门负责人', icon: Building2, color: 'var(--color-danger)' },
+};
 
 export default function TaskDetail({ task, onClose }: TaskDetailProps) {
   const { remindTask, loading } = useAppStore();
@@ -30,6 +36,11 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
 
   const countdown = getCountdown(task.deadline);
   const reminders = task.reminders ?? [];
+
+  const getRecipientInfo = (r: Reminder) => {
+    const type = r.recipient_type || 'assignee';
+    return recipientLabels[type] || recipientLabels.assignee;
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end" onClick={onClose}>
@@ -129,13 +140,27 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
             {reminders.length > 0 ? (
               <div className="relative pl-6 space-y-3">
                 <div className="absolute left-2 top-1 bottom-1 w-px" style={{ backgroundColor: 'var(--color-border)' }} />
-                {reminders.map(r => (
-                  <div key={r.id} className="relative">
-                    <div className="absolute -left-[18px] top-1 w-2.5 h-2.5 rounded-full border-2" style={{ backgroundColor: 'var(--color-bg-secondary)', borderColor: 'var(--color-accent)' }} />
-                    <div className="text-sm" style={{ color: 'var(--color-text-primary)' }}>{r.type} → {r.sent_to}</div>
-                    <div className="text-xs" style={{ color: 'var(--color-text-muted)' }}>{r.sent_at}</div>
-                  </div>
-                ))}
+                {reminders.map(r => {
+                  const info = getRecipientInfo(r);
+                  const RecIcon = info.icon;
+                  return (
+                    <div key={r.id} className="relative">
+                      <div
+                        className="absolute -left-[18px] top-1 w-2.5 h-2.5 rounded-full border-2"
+                        style={{ backgroundColor: 'var(--color-bg-secondary)', borderColor: info.color }}
+                      />
+                      <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--color-text-primary)' }}>
+                        <RecIcon size={12} style={{ color: info.color }} />
+                        <span className="font-medium" style={{ color: info.color }}>{info.label}</span>
+                        <span style={{ color: 'var(--color-text-muted)' }}>→</span>
+                        <span>{r.sent_to_name || r.sent_to}</span>
+                      </div>
+                      <div className="text-xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                        {r.type} · {r.sent_at}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             ) : (
               <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>暂无提醒记录</p>
